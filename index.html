@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ekspresi.ai — Deteksi Ekspresi Wajah Real-time</title>
+
+<!-- Tailwind CSS via CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- face-api.js (TensorFlow.js dibundel di dalamnya) -->
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+
+<style>
+  :root{
+    --bg-base: #14121C;
+    --bg-panel: #1C1926;
+    --bg-panel-alt: #221E30;
+    --border-soft: #322C42;
+    --text-primary: #F4F1FA;
+    --text-muted: #9691A8;
+    --accent-coral: #FF6B4A;
+    --accent-teal: #45E0D6;
+    --accent-violet: #9D7BFF;
+
+    --c-happy: #FFC24A;
+    --c-sad: #4A9EFF;
+    --c-angry: #FF5A5A;
+    --c-surprised: #FF6BD6;
+    --c-neutral: #9691A8;
+    --c-fearful: #9D7BFF;
+    --c-disgusted: #5FD98A;
+  }
+
+  * { box-sizing: border-box; }
+
+  body{
+    background-color: var(--bg-base);
+    background-image:
+      radial-gradient(ellipse 60% 50% at 15% -10%, rgba(255,107,74,0.14), transparent 60%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, rgba(69,224,214,0.10), transparent 55%);
+    background-attachment: fixed;
+    color: var(--text-primary);
+    font-family: 'Inter', sans-serif;
+  }
+
+  .font-display{ font-family: 'Space Grotesk', sans-serif; }
+  .font-mono{ font-family: 'JetBrains Mono', monospace; }
+
+  .panel{
+    background: var(--bg-panel);
+    border: 1px solid var(--border-soft);
+  }
+  .panel-alt{
+    background: var(--bg-panel-alt);
+    border: 1px solid var(--border-soft);
+  }
+
+  /* ---------- Scan frame overlay ---------- */
+  .scan-corner{
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    border-color: var(--accent-coral);
+    filter: drop-shadow(0 0 6px rgba(255,107,74,0.6));
+    z-index: 20;
+    transition: border-color 0.3s ease;
+  }
+  .scan-corner.tl{ top: 14px; left: 14px; border-top: 3px solid; border-left: 3px solid; border-top-left-radius: 6px; }
+  .scan-corner.tr{ top: 14px; right: 14px; border-top: 3px solid; border-right: 3px solid; border-top-right-radius: 6px; }
+  .scan-corner.bl{ bottom: 14px; left: 14px; border-bottom: 3px solid; border-left: 3px solid; border-bottom-left-radius: 6px; }
+  .scan-corner.br{ bottom: 14px; right: 14px; border-bottom: 3px solid; border-right: 3px solid; border-bottom-right-radius: 6px; }
+
+  .scan-corner.active{ border-color: var(--accent-teal); filter: drop-shadow(0 0 8px rgba(69,224,214,0.7)); }
+
+  @keyframes scanline{
+    0%{ transform: translateY(0); opacity: 0; }
+    10%{ opacity: 1; }
+    90%{ opacity: 1; }
+    100%{ transform: translateY(calc(100% + 0px)); opacity: 0; }
+  }
+  .scan-line{
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent-teal), transparent);
+    box-shadow: 0 0 12px 2px rgba(69,224,214,0.7);
+    animation: scanline 2.6s linear infinite;
+    z-index: 15;
+    pointer-events: none;
+  }
+
+  @keyframes pulse-dot{
+    0%,100%{ opacity: 1; transform: scale(1); }
+    50%{ opacity: 0.4; transform: scale(0.85); }
+  }
+  .live-dot{ animation: pulse-dot 1.4s ease-in-out infinite; }
+
+  /* ---------- Spectrum bars (signature element) ---------- */
+  .spectrum-track{
+    background: #14121C;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    overflow: hidden;
+    position: relative;
+    height: 10px;
+  }
+  .spectrum-fill{
+    height: 100%;
+    border-radius: 999px;
+    transition: width 0.35s cubic-bezier(0.4,0,0.2,1);
+    position: relative;
+  }
+  .spectrum-fill::after{
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(90deg, rgba(255,255,255,0.35) 0px, rgba(255,255,255,0.35) 2px, transparent 2px, transparent 6px);
+    opacity: 0.5;
+  }
+
+  .emo-row.is-dominant .emo-label{ color: var(--text-primary); font-weight: 700; }
+  .emo-row.is-dominant{ transform: scale(1.02); }
+  .emo-row{ transition: transform 0.25s ease; }
+
+  /* Buttons */
+  .btn{
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    transition: all 0.18s ease;
+    white-space: nowrap;
+  }
+  .btn:disabled{ opacity: 0.4; cursor: not-allowed; }
+  .btn-primary{
+    background: linear-gradient(135deg, var(--accent-coral), #ff8a63);
+    color: #1A1220;
+    box-shadow: 0 4px 18px rgba(255,107,74,0.35);
+  }
+  .btn-primary:not(:disabled):hover{ transform: translateY(-1px); box-shadow: 0 6px 22px rgba(255,107,74,0.5); }
+
+  .btn-danger{
+    background: var(--bg-panel-alt);
+    color: #FF8080;
+    border: 1px solid #4a2b2b;
+  }
+  .btn-danger:not(:disabled):hover{ background: #2a1c1c; }
+
+  .btn-ghost{
+    background: var(--bg-panel-alt);
+    color: var(--text-primary);
+    border: 1px solid var(--border-soft);
+  }
+  .btn-ghost:not(:disabled):hover{ border-color: var(--accent-teal); color: var(--accent-teal); }
+
+  .btn-teal{
+    background: linear-gradient(135deg, var(--accent-teal), #33bcb3);
+    color: #0F1A19;
+    box-shadow: 0 4px 18px rgba(69,224,214,0.3);
+  }
+  .btn-teal:not(:disabled):hover{ transform: translateY(-1px); }
+
+  ::-webkit-scrollbar{ width: 8px; }
+  ::-webkit-scrollbar-track{ background: var(--bg-base); }
+  ::-webkit-scrollbar-thumb{ background: var(--border-soft); border-radius: 8px; }
+
+  .spinner{
+    border: 3px solid rgba(255,255,255,0.12);
+    border-top-color: var(--accent-coral);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+
+  .fade-in{ animation: fadeIn 0.4s ease both; }
+  @keyframes fadeIn{ from{ opacity:0; transform: translateY(6px);} to{opacity:1; transform: translateY(0);} }
+
+  .step-num{
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    background: var(--bg-panel-alt);
+    border: 1px solid var(--border-soft);
+  }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+  <!-- ============ HEADER ============ -->
+  <header class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
+    <div class="flex items-center gap-3">
+      <div class="w-11 h-11 rounded-xl flex items-center justify-center text-xl"
+           style="background:linear-gradient(135deg, var(--accent-coral), var(--accent-violet));">
+        🎭
+      </div>
+      <div>
+        <h1 class="font-display text-2xl font-bold tracking-tight">Ekspresi<span style="color:var(--accent-coral)">.ai</span></h1>
+        <p class="text-xs font-mono text-[var(--text-muted)] mt-0.5">DETEKSI EKSPRESI WAJAH REAL-TIME · ON-DEVICE</p>
+      </div>
+    </div>
+    <div id="model-status" class="flex items-center gap-2 panel-alt px-3 py-2 rounded-lg text-xs font-mono">
+      <span class="w-2 h-2 rounded-full bg-yellow-400 live-dot"></span>
+      <span id="model-status-text">Memuat model AI…</span>
+    </div>
+  </header>
+
+  <!-- ============ MAIN GRID ============ -->
+  <main class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+
+    <!-- ---------- LEFT: CAMERA ---------- -->
+    <section class="lg:col-span-3 flex flex-col gap-4">
+
+      <div class="panel rounded-2xl p-4 sm:p-5">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-display font-semibold text-lg flex items-center gap-2">
+            <span>📷</span> Video Feed
+          </h2>
+          <div id="camera-badge" class="hidden items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded-full bg-red-500/15 text-red-300 border border-red-500/30">
+            <span class="w-1.5 h-1.5 rounded-full bg-red-400 live-dot"></span> LIVE
+          </div>
+        </div>
+
+        <!-- Video container -->
+        <div id="video-wrap" class="relative w-full aspect-video rounded-xl overflow-hidden bg-black border border-[var(--border-soft)]">
+
+          <video id="video" autoplay muted playsinline class="w-full h-full object-cover scale-x-[-1]"></video>
+          <canvas id="overlay" class="absolute inset-0 w-full h-full scale-x-[-1]"></canvas>
+
+          <!-- scan corners -->
+          <div class="scan-corner tl"></div>
+          <div class="scan-corner tr"></div>
+          <div class="scan-corner bl"></div>
+          <div class="scan-corner br"></div>
+          <div id="scan-line" class="scan-line hidden"></div>
+
+          <!-- idle state -->
+          <div id="video-idle" class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-[#0D0B12]/95 text-center px-6">
+            <div class="w-16 h-16 rounded-full panel-alt flex items-center justify-center text-3xl">📹</div>
+            <p class="font-display font-semibold">Kamera belum aktif</p>
+            <p class="text-sm text-[var(--text-muted)] max-w-xs">Tekan tombol "Mulai Kamera" di bawah untuk memulai deteksi ekspresi wajah secara langsung.</p>
+          </div>
+
+          <!-- loading models overlay -->
+          <div id="video-loading" class="absolute inset-0 hidden flex-col items-center justify-center gap-3 bg-[#0D0B12]/90">
+            <div class="spinner w-10 h-10"></div>
+            <p class="text-sm font-mono text-[var(--text-muted)]">Menyiapkan model deteksi…</p>
+          </div>
+
+          <!-- no face detected hint -->
+          <div id="no-face-hint" class="hidden absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-black/60 backdrop-blur text-xs font-mono text-[var(--text-muted)] z-20">
+            Posisikan wajah Anda di dalam bingkai
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="flex flex-wrap items-center gap-2.5 mt-4">
+          <button id="btn-start" class="btn btn-primary px-4 py-2.5 rounded-xl text-sm" disabled>
+            ▶ Mulai Kamera
+          </button>
+          <button id="btn-stop" class="btn btn-danger px-4 py-2.5 rounded-xl text-sm" disabled>
+            ■ Hentikan Kamera
+          </button>
+          <button id="btn-switch" class="btn btn-ghost px-4 py-2.5 rounded-xl text-sm" disabled>
+            ⟲ Ganti Kamera
+          </button>
+          <button id="btn-snapshot" class="btn btn-teal px-4 py-2.5 rounded-xl text-sm ml-auto" disabled>
+            📸 Ambil Foto
+          </button>
+        </div>
+
+        <p id="camera-error" class="hidden mt-3 text-sm text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2"></p>
+      </div>
+
+      <!-- Snapshot preview -->
+      <div id="snapshot-panel" class="hidden panel rounded-2xl p-4 sm:p-5 fade-in">
+        <h2 class="font-display font-semibold text-lg mb-3 flex items-center gap-2">🖼️ Hasil Tangkapan</h2>
+        <div class="grid sm:grid-cols-[1fr_auto] gap-4 items-center">
+          <img id="snapshot-img" class="w-full rounded-xl border border-[var(--border-soft)]" />
+          <div class="flex sm:flex-col gap-2.5">
+            <button id="btn-download" class="btn btn-primary px-4 py-2.5 rounded-xl text-sm whitespace-nowrap">⬇ Unduh Gambar</button>
+            <button id="btn-close-snapshot" class="btn btn-ghost px-4 py-2.5 rounded-xl text-sm whitespace-nowrap">✕ Tutup</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- RIGHT: RESULTS ---------- -->
+    <section class="lg:col-span-2 flex flex-col gap-4">
+
+      <!-- Dominant expression -->
+      <div class="panel rounded-2xl p-5">
+        <h2 class="font-display font-semibold text-lg mb-4 flex items-center gap-2">✨ Ekspresi Dominan</h2>
+        <div class="panel-alt rounded-xl p-5 flex items-center gap-4">
+          <div id="dominant-emoji" class="text-5xl leading-none">😐</div>
+          <div class="flex-1 min-w-0">
+            <p id="dominant-label" class="font-display font-bold text-xl truncate">Menunggu deteksi…</p>
+            <p class="text-xs font-mono text-[var(--text-muted)] mt-1">TINGKAT KEPASTIAN</p>
+            <div class="spectrum-track mt-1.5">
+              <div id="dominant-bar" class="spectrum-fill" style="width:0%; background: var(--accent-coral);"></div>
+            </div>
+          </div>
+          <div id="dominant-pct" class="font-mono font-bold text-2xl" style="color:var(--accent-coral)">0%</div>
+        </div>
+        <p class="text-xs text-[var(--text-muted)] mt-3 font-mono" id="face-count-text">Wajah terdeteksi: 0</p>
+      </div>
+
+      <!-- Spectrum analyzer of all emotions -->
+      <div class="panel rounded-2xl p-5 flex-1">
+        <h2 class="font-display font-semibold text-lg mb-4 flex items-center gap-2">📊 Spektrum Emosi</h2>
+        <div id="emo-list" class="flex flex-col gap-3.5"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ GUIDE ============ -->
+  <section class="panel rounded-2xl p-6 mt-8">
+    <h2 class="font-display font-semibold text-lg mb-5 flex items-center gap-2">📖 Panduan Penggunaan</h2>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div class="flex gap-3">
+        <div class="step-num w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0">1</div>
+        <p class="text-sm text-[var(--text-muted)]"><span class="text-[var(--text-primary)] font-medium">Izinkan akses kamera</span> saat browser meminta izin, lalu tekan "Mulai Kamera".</p>
+      </div>
+      <div class="flex gap-3">
+        <div class="step-num w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0">2</div>
+        <p class="text-sm text-[var(--text-muted)]"><span class="text-[var(--text-primary)] font-medium">Posisikan wajah</span> menghadap kamera dengan pencahayaan yang cukup terang.</p>
+      </div>
+      <div class="flex gap-3">
+        <div class="step-num w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0">3</div>
+        <p class="text-sm text-[var(--text-muted)]"><span class="text-[var(--text-primary)] font-medium">Lihat hasil</span> ekspresi dominan dan grafik spektrum di panel kanan secara langsung.</p>
+      </div>
+      <div class="flex gap-3">
+        <div class="step-num w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0">4</div>
+        <p class="text-sm text-[var(--text-muted)]"><span class="text-[var(--text-primary)] font-medium">Ambil & unduh foto</span> kapan pun untuk menyimpan hasil deteksi ke perangkat Anda.</p>
+      </div>
+    </div>
+    <p class="text-xs text-[var(--text-muted)] mt-5 pt-4 border-t border-[var(--border-soft)] font-mono">
+      🔒 PRIVASI: Seluruh proses analisis wajah berjalan langsung di browser Anda (on-device). Tidak ada gambar atau video yang dikirim atau disimpan ke server mana pun.
+    </p>
+  </section>
+
+  <footer class="text-center text-xs text-[var(--text-muted)] font-mono mt-8 pb-4">
+    Dibangun dengan face-api.js &amp; TensorFlow.js — berjalan 100% di perangkat Anda.
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* ============================================================
+     KONFIGURASI EMOSI
+     ============================================================ */
+  const EMOTIONS = [
+    { key: "happy",     label: "Senang",   emoji: "😄", color: "var(--c-happy)" },
+    { key: "sad",       label: "Sedih",    emoji: "😢", color: "var(--c-sad)" },
+    { key: "angry",     label: "Marah",    emoji: "😠", color: "var(--c-angry)" },
+    { key: "surprised", label: "Terkejut", emoji: "😮", color: "var(--c-surprised)" },
+    { key: "neutral",   label: "Netral",   emoji: "😐", color: "var(--c-neutral)" },
+    { key: "fearful",   label: "Takut",    emoji: "😨", color: "var(--c-fearful)" },
+    { key: "disgusted", label: "Jijik",    emoji: "🤢", color: "var(--c-disgusted)" },
+  ];
+  const EMO_MAP = Object.fromEntries(EMOTIONS.map(e => [e.key, e]));
+
+  const MODEL_URL = "https://justadudewhohacks.github.io/face-api.js/models";
+
+  /* ============================================================
+     ELEMENT REFERENCES
+     ============================================================ */
+  const $ = (id) => document.getElementById(id);
+
+  const video          = $("video");
+  const overlay        = $("overlay");
+  const videoWrap      = $("video-wrap");
+  const videoIdle      = $("video-idle");
+  const videoLoading   = $("video-loading");
+  const scanLine       = $("scan-line");
+  const noFaceHint     = $("no-face-hint");
+  const cameraBadge    = $("camera-badge");
+  const cameraError    = $("camera-error");
+  const scanCorners    = document.querySelectorAll(".scan-corner");
+
+  const btnStart    = $("btn-start");
+  const btnStop     = $("btn-stop");
+  const btnSwitch   = $("btn-switch");
+  const btnSnapshot = $("btn-snapshot");
+
+  const modelStatus     = $("model-status");
+  const modelStatusText = $("model-status-text");
+
+  const dominantEmoji = $("dominant-emoji");
+  const dominantLabel = $("dominant-label");
+  const dominantBar   = $("dominant-bar");
+  const dominantPct   = $("dominant-pct");
+  const faceCountText = $("face-count-text");
+  const emoList        = $("emo-list");
+
+  const snapshotPanel = $("snapshot-panel");
+  const snapshotImg   = $("snapshot-img");
+  const btnDownload   = $("btn-download");
+  const btnCloseSnap  = $("btn-close-snapshot");
+
+  /* ============================================================
+     STATE
+     ============================================================ */
+  let modelsReady = false;
+  let stream = null;
+  let detectionTimer = null;
+  let facingMode = "user";
+  let lastSnapshotDataUrl = null;
+  let lastDetectionForSnapshot = null; // { label, pct }
+
+  /* ============================================================
+     BUILD SPECTRUM ROWS
+     ============================================================ */
+  EMOTIONS.forEach(e => {
+    const row = document.createElement("div");
+    row.className = "emo-row flex items-center gap-3";
+    row.id = `row-${e.key}`;
+    row.innerHTML = `
+      <div class="w-8 text-lg text-center shrink-0">${e.emoji}</div>
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center justify-between mb-1">
+          <span class="emo-label text-sm text-[var(--text-muted)]">${e.label}</span>
+          <span class="emo-pct text-xs font-mono text-[var(--text-muted)]">0%</span>
+        </div>
+        <div class="spectrum-track">
+          <div class="spectrum-fill" id="bar-${e.key}" style="width:0%; background:${e.color};"></div>
+        </div>
+      </div>
+    `;
+    emoList.appendChild(row);
+  });
+
+  /* ============================================================
+     LOAD MODELS
+     ============================================================ */
+  async function loadModels() {
+    try {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL),
+      ]);
+      modelsReady = true;
+      modelStatusText.textContent = "Model siap";
+      modelStatus.querySelector("span.w-2").classList.remove("bg-yellow-400");
+      modelStatus.querySelector("span.w-2").classList.add("bg-emerald-400");
+      btnStart.disabled = false;
+    } catch (err) {
+      console.error("Gagal memuat model:", err);
+      modelStatusText.textContent = "Gagal memuat model";
+      modelStatus.querySelector("span.w-2").classList.remove("bg-yellow-400", "live-dot");
+      modelStatus.querySelector("span.w-2").classList.add("bg-red-400");
+      showCameraError("Model AI gagal dimuat. Periksa koneksi internet Anda, lalu muat ulang halaman ini.");
+    }
+  }
+
+  function showCameraError(msg) {
+    cameraError.textContent = "⚠ " + msg;
+    cameraError.classList.remove("hidden");
+  }
+  function clearCameraError() {
+    cameraError.classList.add("hidden");
+    cameraError.textContent = "";
+  }
+
+  /* ============================================================
+     CAMERA CONTROL
+     ============================================================ */
+  async function startCamera() {
+    clearCameraError();
+    if (!modelsReady) {
+      showCameraError("Model AI belum siap, mohon tunggu sebentar.");
+      return;
+    }
+
+    btnStart.disabled = true;
+    videoLoading.classList.remove("hidden");
+    videoLoading.classList.add("flex");
+    videoIdle.classList.add("hidden");
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facingMode }, width: { ideal: 960 }, height: { ideal: 540 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+
+      await new Promise((resolve) => {
+        video.onloadedmetadata = () => resolve();
+      });
+      await video.play();
+
+      videoLoading.classList.add("hidden");
+      videoLoading.classList.remove("flex");
+
+      cameraBadge.classList.remove("hidden");
+      cameraBadge.classList.add("flex");
+      scanLine.classList.remove("hidden");
+      scanCorners.forEach(c => c.classList.add("active"));
+      noFaceHint.classList.remove("hidden");
+
+      btnStop.disabled = false;
+      btnSwitch.disabled = false;
+      btnSnapshot.disabled = false;
+
+      resizeOverlay();
+      startDetectionLoop();
+    } catch (err) {
+      console.error("Gagal mengakses kamera:", err);
+      videoLoading.classList.add("hidden");
+      videoLoading.classList.remove("flex");
+      videoIdle.classList.remove("hidden");
+      btnStart.disabled = false;
+
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        showCameraError("Izin akses kamera ditolak. Aktifkan izin kamera pada pengaturan browser Anda.");
+      } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+        showCameraError("Tidak ada perangkat kamera yang ditemukan.");
+      } else {
+        showCameraError("Tidak dapat mengakses kamera: " + err.message);
+      }
+    }
+  }
+
+  function stopCamera() {
+    if (detectionTimer) {
+      clearTimeout(detectionTimer);
+      detectionTimer = null;
+    }
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    video.srcObject = null;
+
+    videoIdle.classList.remove("hidden");
+    cameraBadge.classList.add("hidden");
+    cameraBadge.classList.remove("flex");
+    scanLine.classList.add("hidden");
+    scanCorners.forEach(c => c.classList.remove("active"));
+    noFaceHint.classList.add("hidden");
+
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    btnSwitch.disabled = true;
+    btnSnapshot.disabled = true;
+
+    resetResultsUI();
+  }
+
+  async function switchCamera() {
+    if (!stream) return;
+    const previousFacing = facingMode;
+    facingMode = facingMode === "user" ? "environment" : "user";
+    btnSwitch.disabled = true;
+
+    stream.getTracks().forEach(t => t.stop());
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: facingMode }, width: { ideal: 960 }, height: { ideal: 540 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+      await video.play();
+      resizeOverlay();
+    } catch (err) {
+      console.warn("Kamera arah tersebut tidak tersedia, mencoba mode ideal…", err);
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facingMode }, width: { ideal: 960 }, height: { ideal: 540 } },
+          audio: false,
+        });
+        video.srcObject = stream;
+        await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+        await video.play();
+        resizeOverlay();
+      } catch (err2) {
+        console.error("Gagal beralih kamera:", err2);
+        facingMode = previousFacing;
+        showCameraError("Kamera lain tidak tersedia di perangkat ini. Tetap menggunakan kamera saat ini.");
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facingMode } }, audio: false,
+          });
+          video.srcObject = stream;
+          await video.play();
+          resizeOverlay();
+        } catch (e3) { /* diamkan; kamera tetap berhenti jika benar-benar gagal */ }
+      }
+    }
+    btnSwitch.disabled = false;
+  }
+
+  function resizeOverlay() {
+    overlay.width = video.clientWidth;
+    overlay.height = video.clientHeight;
+  }
+  window.addEventListener("resize", () => { if (stream) resizeOverlay(); });
+
+  /* ============================================================
+     DETECTION LOOP
+     ============================================================ */
+  const detectorOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+
+  function startDetectionLoop() {
+    const runLoop = async () => {
+      if (!stream || video.readyState < 2) {
+        detectionTimer = setTimeout(runLoop, 200);
+        return;
+      }
+      try {
+        const displaySize = { width: video.clientWidth, height: video.clientHeight };
+        const detections = await faceapi
+          .detectAllFaces(video, detectorOptions)
+          .withFaceLandmarks()
+          .withFaceExpressions();
+
+        const ctx = overlay.getContext("2d");
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        if (detections.length > 0) {
+          noFaceHint.classList.add("hidden");
+          const resized = faceapi.resizeResults(detections, displaySize);
+
+          resized.forEach(det => {
+            drawBoundingBox(ctx, det.detection.box);
+            drawLandmarks(ctx, det.landmarks);
+          });
+
+          // gunakan wajah dengan skor deteksi tertinggi untuk panel hasil
+          const best = detections.reduce((a, b) => (a.detection.score > b.detection.score ? a : b));
+          updateResultsUI(best.expressions, detections.length);
+        } else {
+          noFaceHint.classList.remove("hidden");
+          updateResultsUI(null, 0);
+        }
+      } catch (err) {
+        console.error("Kesalahan saat mendeteksi wajah:", err);
+      }
+      detectionTimer = setTimeout(runLoop, 180);
+    };
+    runLoop();
+  }
+
+  function drawBoundingBox(ctx, box) {
+    ctx.strokeStyle = "#45E0D6";
+    ctx.lineWidth = 2;
+    ctx.shadowColor = "rgba(69,224,214,0.7)";
+    ctx.shadowBlur = 6;
+    const r = 10;
+    roundRectPath(ctx, box.x, box.y, box.width, box.height, r);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  function roundRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawLandmarks(ctx, landmarks) {
+    ctx.fillStyle = "rgba(255,107,74,0.85)";
+    landmarks.positions.forEach(pt => {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  /* ============================================================
+     UPDATE RESULTS PANEL
+     ============================================================ */
+  function updateResultsUI(expressions, faceCount) {
+    faceCountText.textContent = `Wajah terdeteksi: ${faceCount}`;
+
+    if (!expressions) {
+      EMOTIONS.forEach(e => setBar(e.key, 0));
+      dominantLabel.textContent = "Tidak ada wajah terdeteksi";
+      dominantEmoji.textContent = "🙈";
+      dominantPct.textContent = "0%";
+      dominantBar.style.width = "0%";
+      document.querySelectorAll(".emo-row").forEach(r => r.classList.remove("is-dominant"));
+      lastDetectionForSnapshot = null;
+      return;
+    }
+
+    let dominantKey = "neutral";
+    let dominantVal = -1;
+    EMOTIONS.forEach(e => {
+      const val = expressions[e.key] || 0;
+      setBar(e.key, val);
+      if (val > dominantVal) { dominantVal = val; dominantKey = e.key; }
+    });
+
+    const info = EMO_MAP[dominantKey];
+    const pct = Math.round(dominantVal * 100);
+
+    dominantEmoji.textContent = info.emoji;
+    dominantLabel.textContent = info.label;
+    dominantLabel.style.color = "var(--text-primary)";
+    dominantPct.textContent = `${pct}%`;
+    dominantPct.style.color = info.color;
+    dominantBar.style.width = `${pct}%`;
+    dominantBar.style.background = info.color;
+
+    document.querySelectorAll(".emo-row").forEach(r => r.classList.remove("is-dominant"));
+    const domRow = $(`row-${dominantKey}`);
+    if (domRow) domRow.classList.add("is-dominant");
+
+    lastDetectionForSnapshot = { label: info.label, emoji: info.emoji, pct };
+  }
+
+  function setBar(key, val) {
+    const pct = Math.round(val * 100);
+    const bar = $(`bar-${key}`);
+    const row = $(`row-${key}`);
+    if (bar) bar.style.width = `${pct}%`;
+    if (row) {
+      const pctEl = row.querySelector(".emo-pct");
+      if (pctEl) pctEl.textContent = `${pct}%`;
+    }
+  }
+
+  function resetResultsUI() {
+    EMOTIONS.forEach(e => setBar(e.key, 0));
+    dominantLabel.textContent = "Menunggu deteksi…";
+    dominantLabel.style.color = "";
+    dominantEmoji.textContent = "😐";
+    dominantPct.textContent = "0%";
+    dominantPct.style.color = "var(--accent-coral)";
+    dominantBar.style.width = "0%";
+    dominantBar.style.background = "var(--accent-coral)";
+    faceCountText.textContent = "Wajah terdeteksi: 0";
+    document.querySelectorAll(".emo-row").forEach(r => r.classList.remove("is-dominant"));
+    lastDetectionForSnapshot = null;
+  }
+
+  /* ============================================================
+     SNAPSHOT & DOWNLOAD
+     ============================================================ */
+  function takeSnapshot() {
+    if (!stream) return;
+
+    const outCanvas = document.createElement("canvas");
+    outCanvas.width = video.videoWidth;
+    outCanvas.height = video.videoHeight;
+    const ctx = outCanvas.getContext("2d");
+
+    // gambar video (mengikuti efek cermin tampilan)
+    ctx.save();
+    ctx.translate(outCanvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, outCanvas.width, outCanvas.height);
+    ctx.restore();
+
+    // gambar overlay deteksi (sudah dalam orientasi cermin yang sama)
+    ctx.save();
+    ctx.translate(outCanvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(overlay, 0, 0, outCanvas.width, outCanvas.height);
+    ctx.restore();
+
+    // label hasil deteksi di bagian bawah gambar
+    const label = lastDetectionForSnapshot
+      ? `${lastDetectionForSnapshot.emoji} ${lastDetectionForSnapshot.label} — ${lastDetectionForSnapshot.pct}%`
+      : "Tidak ada wajah terdeteksi";
+
+    const barHeight = Math.max(56, outCanvas.height * 0.09);
+    ctx.fillStyle = "rgba(10,8,14,0.72)";
+    ctx.fillRect(0, outCanvas.height - barHeight, outCanvas.width, barHeight);
+
+    ctx.fillStyle = "#F4F1FA";
+    ctx.font = `${Math.round(barHeight * 0.4)}px 'Space Grotesk', sans-serif`;
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, 18, outCanvas.height - barHeight / 2);
+
+    ctx.font = `${Math.round(barHeight * 0.22)}px 'JetBrains Mono', monospace`;
+    ctx.fillStyle = "rgba(244,241,250,0.6)";
+    const ts = new Date().toLocaleString("id-ID");
+    ctx.fillText(`Ekspresi.ai · ${ts}`, 18, outCanvas.height - barHeight + 14);
+
+    lastSnapshotDataUrl = outCanvas.toDataURL("image/png");
+    snapshotImg.src = lastSnapshotDataUrl;
+    snapshotPanel.classList.remove("hidden");
+    snapshotPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function downloadSnapshot() {
+    if (!lastSnapshotDataUrl) return;
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    a.href = lastSnapshotDataUrl;
+    a.download = `ekspresi-ai-${stamp}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  /* ============================================================
+     EVENT LISTENERS
+     ============================================================ */
+  btnStart.addEventListener("click", startCamera);
+  btnStop.addEventListener("click", stopCamera);
+  btnSwitch.addEventListener("click", switchCamera);
+  btnSnapshot.addEventListener("click", takeSnapshot);
+  btnDownload.addEventListener("click", downloadSnapshot);
+  btnCloseSnap.addEventListener("click", () => snapshotPanel.classList.add("hidden"));
+
+  window.addEventListener("beforeunload", () => {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  });
+
+  /* ============================================================
+     INIT
+     ============================================================ */
+  resetResultsUI();
+  loadModels();
+
+})();
+</script>
+</body>
+</html>
